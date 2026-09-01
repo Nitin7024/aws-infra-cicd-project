@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'S3 Bucket for Document Storage with IAM Access Role'
+
+# Parameters allow template reusability across environments
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev/staging/prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  
+  BucketPrefix:
+    Type: String
+    Default: document-storage
+    Description: Prefix for bucket name
+
+# Metadata for better organization in AWS Console
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Environment Configuration"
+        Parameters:
+          - EnvironmentName
+          - BucketPrefix
+
+Resources:
+  # S3 Bucket for storing documents
+  DocumentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Using !Sub for dynamic bucket naming
+      BucketName: !Sub '${BucketPrefix}-${EnvironmentName}-${AWS::AccountId}'
+      
+      # Enable versioning for data protection
+      VersioningConfiguration:
+        Status: Enabled
+      
+      # Block all public access (security best practice)
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      
+      # Encrypt data at rest
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      
+      # Lifecycle policy to manage old versions
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+      
+      # Tags for resource management
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Purpose
+          Value: DocumentStorage
+        - Key: CostCenter
+          Value: Engineering
+
+  # IAM Role for applications to access the bucket
+  DocumentBucketAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'DocumentBucketAccess-${EnvironmentName}'
+      
+      # Trust policy - who can assume this role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - ec2.amazonaws.com
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      
+      # Inline policy for S3 access
+      Policies:
+        - PolicyName: S3BucketAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt DocumentBucket.Arn
+                  - !Sub '${DocumentBucket.Arn}/*'
+              
+              # CloudWatch Logs permissions for Lambda
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+      
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # CloudWatch Log Group for monitoring
+  BucketAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/s3/${BucketPrefix}-${EnvironmentName}'
+      RetentionInDays: 7
+
+# Outputs - values you can reference in other stacks or view in console
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket
+    Value: !Ref DocumentBucket
+    Export:
+      Name: !Sub '${EnvironmentName}-DocumentBucket'
+  
+  BucketArn:
+    Description: ARN of the S3 bucket
+    Value: !GetAtt DocumentBucket.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-DocumentBucketArn'
+  
+  BucketAccessRoleArn:
+    Description: ARN of the IAM role for bucket access
+    Value: !GetAtt DocumentBucketAccessRole.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-DocumentBucketRoleArn'
+  
+  LogGroupName:
+    Description: CloudWatch Log Group name
+    Value: !Ref BucketAccessLogGroup

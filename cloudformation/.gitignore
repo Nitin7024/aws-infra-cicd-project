@@ -1,0 +1,42 @@
+# Mac specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AWS credentials (NEVER commit these!)
+*.pem
+*.key
+credentials
+config
+.aws/
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+
+# Python (if you use it)
+__pycache__/
+*.pyc
+*.pyo
+
+# Node modules (if you use it)
+node_modules/
+
+# CloudFormation package artifacts
+packaged-template.yaml
+.aws-sam/
