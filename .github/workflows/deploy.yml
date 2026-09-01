@@ -1,0 +1,116 @@
+name: Deploy AWS Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'cloudformation/**'
+      - '.github/workflows/**'
+  
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'cloudformation/**'
+  
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: ap-south-1
+
+jobs:
+  deploy:
+    name: Deploy CloudFormation Stack
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: 🔍 Determine Environment
+        id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+            echo "stack_name=document-storage-prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "stack_name=document-storage-dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: ✅ Validate CloudFormation Template
+        run: |
+          echo "Validating template..."
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/templates/s3-document-storage.yaml \
+            --region ${{ env.AWS_REGION }}
+          echo "✅ Template is valid!"
+
+      - name: 🚀 Deploy CloudFormation Stack
+        run: |
+          echo "Deploying stack: ${{ steps.env.outputs.stack_name }}"
+          echo "Environment: ${{ steps.env.outputs.environment }}"
+          
+          aws cloudformation deploy \
+            --template-file cloudformation/templates/s3-document-storage.yaml \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --parameter-overrides file://cloudformation/parameters/${{ steps.env.outputs.environment }}.json \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ env.AWS_REGION }} \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ Deployment complete!"
+
+      - name: 📊 Get Stack Outputs
+        run: |
+          echo "Stack Outputs:"
+          aws cloudformation describe-stacks \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs' \
+            --output table
+
+      - name: 🔍 Verify S3 Bucket
+        run: |
+          BUCKET_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
+            --output text)
+          
+          echo "Bucket Name: $BUCKET_NAME"
+          echo "Verifying bucket exists..."
+          
+          aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }}
+          
+          echo "✅ Bucket verified successfully!"
+
+      - name: 📝 List Stack Resources
+        if: success()
+        run: |
+          echo "Created Resources:"
+          aws cloudformation list-stack-resources \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'StackResourceSummaries[*].[LogicalResourceId,ResourceType,ResourceStatus]' \
+            --output table
+
+      - name: ❌ Show Failure Reason
+        if: failure()
+        run: |
+          echo "Deployment failed! Checking events..."
+          aws cloudformation describe-stack-events \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --max-items 10 \
+            --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[LogicalResourceId,ResourceStatusReason]' \
+            --output table
