@@ -32,7 +32,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       # Using !Sub for dynamic bucket naming
-      BucketName: !Sub '${BucketPrefix}-${EnvironmentName}-${AWS::AccountId}'
+      BucketName: !Sub '${BucketPrefix}-${EnvironmentName}-INVALID-UPPERCASE-${AWS::AccountId}'
       
       # Enable versioning for data protection
       VersioningConfiguration:
