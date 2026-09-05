@@ -34,6 +34,35 @@ Resources:
       # Using !Sub for dynamic bucket naming
       BucketName: !Sub '${BucketPrefix}-${EnvironmentName}-${AWS::AccountId}'
       
+       # NEW BUCKET - Add this
+  ApplicationLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'app-logs-${EnvironmentName}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 30  # Delete after 30 days
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Purpose
+          Value: ApplicationLogs
+
       # Enable versioning for data protection
       VersioningConfiguration:
         Status: Enabled
@@ -149,3 +178,16 @@ Outputs:
   LogGroupName:
     Description: CloudWatch Log Group name
     Value: !Ref BucketAccessLogGroup
+
+   # NEW OUTPUT
+  AppLogsBucketName:
+    Description: Name of the application logs bucket
+    Value: !Ref ApplicationLogsBucket
+    Export:
+      Name: !Sub '${EnvironmentName}-AppLogsBucket'
+  
+  AppLogsBucketArn:
+    Description: ARN of the application logs bucket
+    Value: !GetAtt ApplicationLogsBucket.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-AppLogsBucketArn'
