@@ -7,6 +7,7 @@ on:
       - develop
     paths:
       - 'cloudformation/**'
+      - 'lambda/**'
       - '.github/workflows/**'
   
   pull_request:
@@ -14,6 +15,7 @@ on:
       - main
     paths:
       - 'cloudformation/**'
+      - 'lambda/**'
   
   workflow_dispatch:  # Allow manual trigger
 
@@ -21,9 +23,16 @@ env:
   AWS_REGION: ap-south-1
 
 jobs:
-  deploy:
-    name: Deploy CloudFormation Stack
+  # ========================================
+  # JOB 1: Deploy S3 Storage Stack
+  # ========================================
+  deploy-s3-stack:
+    name: Deploy S3 Document Storage Stack
     runs-on: ubuntu-latest
+    
+    outputs:
+      stack-name: ${{ steps.env.outputs.stack_name }}
+      environment: ${{ steps.env.outputs.environment }}
     
     steps:
       - name: 📥 Checkout code
@@ -46,19 +55,22 @@ jobs:
             echo "environment=dev" >> $GITHUB_OUTPUT
             echo "stack_name=document-storage-dev" >> $GITHUB_OUTPUT
           fi
+          
+          echo "Environment: ${{ steps.env.outputs.environment }}"
+          echo "Stack Name: ${{ steps.env.outputs.stack_name }}"
 
-      - name: ✅ Validate CloudFormation Template
+      - name: ✅ Validate S3 CloudFormation Template
         run: |
-          echo "Validating template..."
+          echo "🔍 Validating S3 template..."
           aws cloudformation validate-template \
             --template-body file://cloudformation/templates/s3-document-storage.yaml \
             --region ${{ env.AWS_REGION }}
-          echo "✅ Template is valid!"
+          echo "✅ S3 template is valid!"
 
-      - name: 🚀 Deploy CloudFormation Stack
+      - name: 🚀 Deploy S3 CloudFormation Stack
         run: |
-          echo "Deploying stack: ${{ steps.env.outputs.stack_name }}"
-          echo "Environment: ${{ steps.env.outputs.environment }}"
+          echo "🚀 Deploying S3 stack: ${{ steps.env.outputs.stack_name }}"
+          echo "📦 Environment: ${{ steps.env.outputs.environment }}"
           
           aws cloudformation deploy \
             --template-file cloudformation/templates/s3-document-storage.yaml \
@@ -68,11 +80,11 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --no-fail-on-empty-changeset
           
-          echo "✅ Deployment complete!"
+          echo "✅ S3 Stack deployment complete!"
 
-      - name: 📊 Get Stack Outputs
+      - name: 📊 Get S3 Stack Outputs
         run: |
-          echo "Stack Outputs:"
+          echo "📊 S3 Stack Outputs:"
           aws cloudformation describe-stacks \
             --stack-name ${{ steps.env.outputs.stack_name }} \
             --region ${{ env.AWS_REGION }} \
@@ -87,30 +99,177 @@ jobs:
             --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
             --output text)
           
-          echo "Bucket Name: $BUCKET_NAME"
-          echo "Verifying bucket exists..."
+          echo "✅ Bucket Name: $BUCKET_NAME"
+          echo "🔍 Verifying bucket exists..."
           
           aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }}
           
-          echo "✅ Bucket verified successfully!"
+          echo "✅ S3 Bucket verified successfully!"
 
-      - name: 📝 List Stack Resources
-        if: success()
+  # ========================================
+  # JOB 2: Deploy Lambda Processor Stack
+  # ========================================
+  deploy-lambda-stack:
+    name: Deploy Lambda Document Processor Stack
+    runs-on: ubuntu-latest
+    needs: deploy-s3-stack  # Wait for S3 stack to complete
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: 🔍 Set Environment Variables
+        id: env
         run: |
-          echo "Created Resources:"
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+            echo "stack_name=lambda-processor-prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "stack_name=lambda-processor-dev" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Environment: $(echo '${{ steps.env.outputs.environment }}')"
+          echo "Lambda Stack Name: $(echo '${{ steps.env.outputs.stack_name }}')"
+
+      - name: ✅ Validate Lambda CloudFormation Template
+        run: |
+          echo "🔍 Validating Lambda template..."
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/templates/lambda-document-processor.yaml \
+            --region ${{ env.AWS_REGION }}
+          echo "✅ Lambda template is valid!"
+
+      - name: 🚀 Deploy Lambda CloudFormation Stack
+        run: |
+          echo "🚀 Deploying Lambda stack: ${{ steps.env.outputs.stack_name }}"
+          echo "📦 Environment: ${{ steps.env.outputs.environment }}"
+          
+          aws cloudformation deploy \
+            --template-file cloudformation/templates/lambda-document-processor.yaml \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --parameter-overrides file://cloudformation/parameters/lambda-${{ steps.env.outputs.environment }}.json \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region ${{ env.AWS_REGION }} \
+            --no-fail-on-empty-changeset
+          
+          echo "✅ Lambda Stack deployment complete!"
+
+      - name: 📊 Get Lambda Stack Outputs
+        run: |
+          echo "📊 Lambda Stack Outputs:"
+          aws cloudformation describe-stacks \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs' \
+            --output table
+
+      - name: 🔍 Verify Lambda Function
+        run: |
+          FUNCTION_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`LambdaFunctionName`].OutputValue' \
+            --output text)
+          
+          echo "✅ Lambda Function Name: $FUNCTION_NAME"
+          echo "🔍 Verifying Lambda function..."
+          
+          aws lambda get-function \
+            --function-name $FUNCTION_NAME \
+            --region ${{ env.AWS_REGION }} \
+            --query 'Configuration.{Name:FunctionName,Runtime:Runtime,Status:State}' \
+            --output table
+          
+          echo "✅ Lambda Function verified successfully!"
+
+      - name: 📝 List All Stack Resources
+        run: |
+          echo "📝 Lambda Stack Resources:"
           aws cloudformation list-stack-resources \
             --stack-name ${{ steps.env.outputs.stack_name }} \
             --region ${{ env.AWS_REGION }} \
             --query 'StackResourceSummaries[*].[LogicalResourceId,ResourceType,ResourceStatus]' \
             --output table
 
-      - name: ❌ Show Failure Reason
-        if: failure()
+  # ========================================
+  # JOB 3: Deployment Summary
+  # ========================================
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-s3-stack, deploy-lambda-stack]
+    if: always()
+    
+    steps:
+      - name: 📋 Deployment Summary
         run: |
-          echo "Deployment failed! Checking events..."
+          echo "========================================="
+          echo "   DEPLOYMENT SUMMARY"
+          echo "========================================="
+          echo ""
+          echo "Environment: ${{ needs.deploy-s3-stack.outputs.environment }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
+          echo ""
+          echo "Deployed Stacks:"
+          echo "  ✅ S3 Stack: ${{ needs.deploy-s3-stack.outputs.stack-name }}"
+          echo "  ✅ Lambda Stack: lambda-processor-${{ needs.deploy-s3-stack.outputs.environment }}"
+          echo ""
+          echo "========================================="
+
+  # ========================================
+  # JOB 4: Handle Failures
+  # ========================================
+  on-failure:
+    name: Handle Deployment Failure
+    runs-on: ubuntu-latest
+    needs: [deploy-s3-stack, deploy-lambda-stack]
+    if: failure()
+    
+    steps:
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: ❌ Show S3 Stack Failure Reason
+        if: needs.deploy-s3-stack.result == 'failure'
+        run: |
+          echo "❌ S3 Stack deployment failed!"
+          echo "Checking events for errors..."
+          
           aws cloudformation describe-stack-events \
-            --stack-name ${{ steps.env.outputs.stack_name }} \
+            --stack-name ${{ needs.deploy-s3-stack.outputs.stack-name }} \
             --region ${{ env.AWS_REGION }} \
             --max-items 10 \
             --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[LogicalResourceId,ResourceStatusReason]' \
-            --output table
+            --output table || echo "Stack not found or no events available"
+
+      - name: ❌ Show Lambda Stack Failure Reason
+        if: needs.deploy-lambda-stack.result == 'failure'
+        run: |
+          echo "❌ Lambda Stack deployment failed!"
+          echo "Checking events for errors..."
+          
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            STACK_NAME="lambda-processor-prod"
+          else
+            STACK_NAME="lambda-processor-dev"
+          fi
+          
+          aws cloudformation describe-stack-events \
+            --stack-name $STACK_NAME \
+            --region ${{ env.AWS_REGION }} \
+            --max-items 10 \
+            --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[LogicalResourceId,ResourceStatusReason]' \
+            --output table || echo "Stack not found or no events available"
