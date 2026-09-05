@@ -77,8 +77,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - 's3:GetObject'
-                  - 's3:HeadObject'
-                  - 's3:ListBucket'
+                
                 Resource:
                   - !Sub 
                     - 'arn:aws:s3:::${BucketName}'
