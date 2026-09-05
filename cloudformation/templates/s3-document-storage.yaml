@@ -56,7 +56,7 @@ Resources:
         Rules:
           - Id: DeleteOldVersions
             Status: Enabled
-            NoncurrentVersionExpirationInDays: 60
+            NoncurrentVersionExpirationInDays: 30
           - Id: TransitionToIA
             Status: Enabled
             Transitions:
