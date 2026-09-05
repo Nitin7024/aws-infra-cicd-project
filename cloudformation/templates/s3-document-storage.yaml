@@ -132,7 +132,7 @@ Outputs:
     Description: Name of the S3 bucket
     Value: !Ref DocumentBucket
     Export:
-      Name: !Sub '${EnvironmentName}-DocumentBucket'
+      Name: !Sub '${EnvironmentName}-DocumentBucket'  # ← Make sure this Export exists!
   
   BucketArn:
     Description: ARN of the S3 bucket

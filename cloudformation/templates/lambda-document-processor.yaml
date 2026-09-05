@@ -1,0 +1,242 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lambda Function for Document Processing with S3 Event Trigger'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name (dev/staging/prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  
+  S3BucketStackName:
+    Type: String
+    Default: document-storage-dev
+    Description: Name of the S3 stack to import bucket name from
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Environment Configuration"
+        Parameters:
+          - EnvironmentName
+          - S3BucketStackName
+
+Resources:
+  # SNS Topic for notifications
+  DocumentProcessingTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'document-processing-${EnvironmentName}'
+      DisplayName: Document Processing Notifications
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # SNS Email Subscription (optional - you can add your email)
+  # DocumentProcessingSubscription:
+  #   Type: AWS::SNS::Subscription
+  #   Properties:
+  #     Protocol: email
+  #     TopicArn: !Ref DocumentProcessingTopic
+  #     Endpoint: your-email@example.com
+
+  # CloudWatch Log Group for Lambda
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/document-processor-${EnvironmentName}'
+      RetentionInDays: 7
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # IAM Role for Lambda Execution
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'DocumentProcessorLambda-${EnvironmentName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:HeadObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !ImportValue 
+                        Fn::Sub: '${EnvironmentName}-DocumentBucket'
+                  - !Sub 
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !ImportValue 
+                        Fn::Sub: '${EnvironmentName}-DocumentBucket'
+        - PolicyName: SNSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: !Ref DocumentProcessingTopic
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !GetAtt LambdaLogGroup.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Lambda Function
+  DocumentProcessorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaLogGroup
+    Properties:
+      FunctionName: !Sub 'document-processor-${EnvironmentName}'
+      Description: Processes documents uploaded to S3 bucket
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref EnvironmentName
+          SNS_TOPIC_ARN: !Ref DocumentProcessingTopic
+          BUCKET_NAME: !ImportValue 
+            Fn::Sub: '${EnvironmentName}-DocumentBucket'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+
+          s3_client = boto3.client('s3')
+          sns_client = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              print(f"Received event: {json.dumps(event)}")
+              
+              try:
+                  sns_topic_arn = os.environ.get('SNS_TOPIC_ARN')
+                  
+                  for record in event['Records']:
+                      bucket_name = record['s3']['bucket']['name']
+                      object_key = record['s3']['object']['key']
+                      event_time = record['eventTime']
+                      file_size = record['s3']['object']['size']
+                      
+                      print(f"Processing file: {object_key} from bucket: {bucket_name}")
+                      
+                      response = s3_client.head_object(
+                          Bucket=bucket_name,
+                          Key=object_key
+                      )
+                      
+                      content_type = response.get('ContentType', 'unknown')
+                      
+                      message = f"""
+          Document Upload Notification
+          ============================
+          
+          File Details:
+          - File Name: {object_key}
+          - Bucket: {bucket_name}
+          - Size: {file_size} bytes
+          - Content Type: {content_type}
+          - Upload Time: {event_time}
+          
+          Processing Status: SUCCESS
+          Environment: {os.environ.get('ENVIRONMENT', 'unknown')}
+          Processed At: {datetime.now().isoformat()}
+          """
+                      
+                      if sns_topic_arn:
+                          sns_response = sns_client.publish(
+                              TopicArn=sns_topic_arn,
+                              Subject=f"Document Processed: {object_key}",
+                              Message=message
+                          )
+                          print(f"SNS notification sent: {sns_response['MessageId']}")
+                      
+                      print(f"Successfully processed: {object_key}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Document processed successfully',
+                          'filesProcessed': len(event['Records'])
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f"ERROR: {str(e)}")
+                  raise e
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Lambda Permission for S3 to invoke
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DocumentProcessorFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 
+        - 'arn:aws:s3:::${BucketName}'
+        - BucketName: !ImportValue 
+            Fn::Sub: '${EnvironmentName}-DocumentBucket'
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt DocumentProcessorFunction.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-DocumentProcessorArn'
+  
+  LambdaFunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref DocumentProcessorFunction
+    Export:
+      Name: !Sub '${EnvironmentName}-DocumentProcessorName'
+  
+  SNSTopicArn:
+    Description: ARN of the SNS topic
+    Value: !Ref DocumentProcessingTopic
+    Export:
+      Name: !Sub '${EnvironmentName}-ProcessingTopicArn'
+  
+  LambdaRoleArn:
+    Description: ARN of Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
+  
+  LogGroupName:
+    Description: CloudWatch Log Group name
+    Value: !Ref LambdaLogGroup
